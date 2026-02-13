@@ -21,7 +21,7 @@
 ### Быстрый старт
 Docker автоматически скачает образ и запустит проверку. Установка не требуется!
 ```bash
-docker run --rm -it ghcr.io/username/dpi-detector:latest
+docker run --rm -it ghcr.io/runnin4ik/dpi-detector:latest
 ```
 
 #### С кастомными доменами
