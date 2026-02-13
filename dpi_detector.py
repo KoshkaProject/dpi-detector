@@ -8,7 +8,7 @@ import errno
 import re
 import math
 import config
-from typing import Tuple, Optional, List  # Добавлен импорт для type hints
+from typing import Tuple, Optional, List
 from urllib.parse import urlparse
 
 warnings.filterwarnings("ignore")
@@ -50,10 +50,21 @@ WSAENETDOWN = config.WSAENETDOWN
 WSAEACCES = config.WSAEACCES
 DPI_VARIANCE_THRESHOLD = config.DPI_VARIANCE_THRESHOLD
 
+def get_resource_path(relative_path):
+    """Получить путь к ресурсу (работает и в .exe и в обычном скрипте)"""
+    try:
+        # PyInstaller создает временную папку и сохраняет путь в _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
 
+    return os.path.join(base_path, relative_path)
+
+# Измените функции загрузки:
 def load_domains(filepath="domains.txt"):
     """Загружает домены из файла."""
     domains = []
+    filepath = get_resource_path(filepath)
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             for line in f:
@@ -67,6 +78,7 @@ def load_domains(filepath="domains.txt"):
 def load_tcp_targets(filepath="tcp_16_20_targets.json"):
     """Загружает TCP цели из JSON."""
     import json
+    filepath = get_resource_path(filepath)
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
