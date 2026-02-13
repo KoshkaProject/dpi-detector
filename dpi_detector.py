@@ -8,6 +8,7 @@ import errno
 import re
 import math
 import config
+import os
 from typing import Tuple, Optional, List
 from urllib.parse import urlparse
 
