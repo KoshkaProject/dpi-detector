@@ -23,7 +23,7 @@ try:
     from rich.panel import Panel
 except ImportError as e:
     print(f"Ошибка: {e}")
-    print("Установите зависимости: pip install httpx rich")
+    print("Установите зависимости: python -m pip install -r requirements.txt")
     sys.exit(1)
 
 console = Console()
@@ -75,39 +75,57 @@ def debug_log(message: str, level: str = "INFO"):
 
 
 def get_resource_path(relative_path):
-    """Получить путь к ресурсу (работает и в .exe и в обычном скрипте)"""
     try:
         base_path = sys._MEIPASS
     except Exception:
-        base_path = os.path.abspath(".")
+        base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
 
 
 def load_domains(filepath="domains.txt"):
-    """Загружает домены из файла."""
+    """Загружает домены из файла с проверкой наличия."""
     domains = []
-    filepath = get_resource_path(filepath)
+    full_path = get_resource_path(filepath)
+
+    if not os.path.exists(full_path):
+        console.print(f"[bold red]КРИТИЧЕСКАЯ ОШИБКА: Файл не найден![/bold red]")
+        console.print(f"[red]Путь: {full_path}[/red]")
+        console.print("[yellow]Положите domains.txt рядом со скриптом.[/yellow]")
+        sys.exit(1) # Останавливаем скрипт
+
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(full_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#'):
                     domains.append(line)
-    except FileNotFoundError:
-        console.print(f"[red]Файл {filepath} не найден![/red]")
+    except Exception as e:
+        console.print(f"[bold red]Ошибка чтения файла {filepath}: {e}[/bold red]")
+        sys.exit(1)
+
     return domains
 
 
 def load_tcp_targets(filepath="tcp_16_20_targets.json"):
     """Загружает TCP цели из JSON."""
     import json
-    filepath = get_resource_path(filepath)
+    full_path = get_resource_path(filepath)
+
+    if not os.path.exists(full_path):
+            console.print(f"[bold red]КРИТИЧЕСКАЯ ОШИБКА: Файл не найден![/bold red]")
+            console.print(f"[red]Путь: {full_path}[/red]")
+            sys.exit(1)
+
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(full_path, 'r', encoding='utf-8') as f:
             return json.load(f)
+    except json.JSONDecodeError as e:
+        console.print(f"[bold red]ОШИБКА: Некорректный JSON в {filepath}![/bold red]")
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
     except FileNotFoundError:
-        console.print(f"[red]Файл {filepath} не найден![/red]")
-        return []
+        console.print(f"[bold red]Ошибка чтения {filepath}: {e}[/bold red]")
+        sys.exit(1)
 
 
 DOMAINS = load_domains()
