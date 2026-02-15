@@ -5,7 +5,6 @@
     {"id": "FR.AKM-05", "provider": "🇫🇷 Akamai", "url": "https://cdn-front.freepik.com/home/anon-rvmp/spaces/spaces_op.webm"},
     {"id": "FR.AKM-06", "provider": "🇫🇷 Akamai", "url": "https://s.pinimg.com/webapp/home-img-1-7ca21c82.png"},
 
-    {"id": "DE.AWS-01", "provider": "🇩🇪 AWS", "url": "https://www.getscope.com/assets/fonts/fa-solid-900.woff2"},
     {"id": "DE.AWS-02", "provider": "🇩🇪 AWS", "url": "https://corp.kaltura.com/wp-content/cache/min/1/wp-content/themes/airfleet/dist/styles/theme.css"},
     {"id": "DE.AWS-04", "provider": "🇩🇪 AWS", "url": "https://ds-cdn.prod-east.frontend.public.atl-paas.net/assets/fonts/atlassian-sans/v3/AtlassianSans-latin.woff2"},
     {"id": "US.AWS-05", "provider": "🇺🇸 AWS", "url": "https://prod-publishers-content.s3.us-east-1.amazonaws.com/media/dhi-hero.jpg"},
@@ -64,9 +63,7 @@
     {"id": "US.OR-01", "provider": "🇺🇸 Oracle", "url": "https://oracle.com"},
     {"id": "MX.OR-01", "provider": "🇲🇽 Oracle", "url": "http://40.233.0.95/assets/bundle.538a44e1.js"},
     {"id": "MX.OR-02", "provider": "🇲🇽 Oracle", "url": "https://k.860617.xyz/static/app/dist/main.js"},
-    {"id": "MX.OR-03", "provider": "🇲🇽 Oracle", "url": "https://oracle.afyh.space/assets/bundle.538a44e1.js"},
 
-    {"id": "FR.OVH-01", "provider": "🇫🇷 OVH", "url": "https://eu.api.ovh.com/console/rapidoc-min.js"},
     {"id": "FR.OVH-02", "provider": "🇫🇷 OVH", "url": "https://ovh.sfx.ovh/10M.bin"},
     {"id": "FR.OVH-03", "provider": "🇫🇷 OVH", "url": "https://proof.ovh.net/files/1Mb.dat"},
     {"id": "FR.OVH-04", "provider": "🇫🇷 OVH", "url": "https://proof.ovh.net/files/10Mb.dat"},
