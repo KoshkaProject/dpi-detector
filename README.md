@@ -28,7 +28,7 @@ docker run --rm -it --pull=always ghcr.io/runnin4ik/dpi-detector:latest
 Или запускайте с указанием определенной версии  
 Это избавляет от постоянных скачиваний, но нужно следить за актуальностью версий
 ```bash
-docker run --rm -it ghcr.io/runnin4ik/dpi-detector:1.1
+docker run --rm -it ghcr.io/runnin4ik/dpi-detector:1.2
 ```
 
 #### С кастомными доменами
@@ -80,7 +80,7 @@ python dpi_detector.py
 ```
 
 ## 🪟 Windows
-Для тех, кто не хочет ставить python - к каждому релизу прикреплен [.exe файл](https://github.com/Runnin4ik/dpi-detector/releases/download/v1.1.0/dpi_detector_v1_1.exe)
+Для тех, кто не хочет ставить python - к каждому релизу прикреплен [.exe файл](https://github.com/Runnin4ik/dpi-detector/releases/download/v1.2.0/dpi_detector_v1_2.exe)
 
 ## Кастомизация:
 ```bash
