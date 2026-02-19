@@ -1838,7 +1838,7 @@ async def main():
         console.print()
 
     console.print(
-        "[bold cyan]DPI Detector v1.2[/bold cyan] | "
+        "[bold cyan]DPI Detector v1.3[/bold cyan] | "
         "[yellow]DNS + TCP/TLS + HTTP + TCP 16-20KB Test[/yellow]"
     )
     console.print(
