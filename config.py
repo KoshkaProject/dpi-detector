@@ -56,12 +56,15 @@ WSAEACCES = 10013
 DNS_CHECK_ENABLED = True
 DNS_CHECK_TIMEOUT = 3.0
 DNS_CHECK_DOMAINS = [
-    "rutor.info",
-    "ej.ru",
-    "flibusta.is",
-    "clubtone.do.am",
-    "rezka.ag",
-    "shikimori.one",
+    "abaddon.koshka.monster",
+    "ziz.koshka.monster",
+    "solomon.koshka.monster",
+    "raphael.koshka.monster",
+    "moloch.koshka.monster",
+    "seraphim.koshka.monster",
+    "uriel.koshka.monster",
+    "nehemiah.koshka.monster",
+    "behemoth.koshka.monster",
 ]
 
 DNS_UDP_SERVERS = [
