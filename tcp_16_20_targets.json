@@ -2,10 +2,13 @@
     {"id": "GB.FH-01", "provider": "🇬🇧 Freakhosting AS215703 (ABADDON)", "url": "https://abaddon.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
     {"id": "AE.FH-02", "provider": "🇦🇪 Freakhosting AS215703 (ZIZ)", "url": "https://ziz.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
     {"id": "FR.FH-03", "provider": "🇫🇷 Freakhosting AS215703 (SOLOMON)", "url": "https://solomon.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
-    {"id": "CZ.WAI-01", "provider": "🇨🇿 WAIcore AS213887 (RAPHAEL)", "url": "https://raphael.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
     {"id": "SA.WAI-02", "provider": "🇸🇦 WAIcore AS213887 (MOLOCH)", "url": "https://moloch.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
-    {"id": "IR.WAI-03", "provider": "🇮🇷 WAIcore AS213887 (SERAPHIM)", "url": "https://seraphim.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
     {"id": "DE.VEL-01", "provider": "🇩🇪 velia.net AS29066 (URIEL)", "url": "https://uriel.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
     {"id": "KZ.KZT-01", "provider": "🇰🇿 Kaztelecom AS9198 (NEHEMIAH)", "url": "https://nehemiah.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
-    {"id": "US.HP-01", "provider": "🇺🇸 HostPapa AS36352 (BEHEMOTH)", "url": "https://behemoth.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"}
+    {"id": "US.FH-04", "provider": "🇺🇸 Freakhosting AS215703 (BASTET)", "url": "https://bastet.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
+    {"id": "BG.DA-01", "provider": "🇧🇬 DA International AS203380 (SEKHMET)", "url": "https://sekhmet.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
+    {"id": "DE.DA-02", "provider": "🇩🇪 DA International AS203380 (BAKENEKO)", "url": "https://bakeneko.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
+    {"id": "BG.DA-03", "provider": "🇧🇬 DA International AS203380 (NEKOMATA)", "url": "https://nekomata.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
+    {"id": "DE.FH-05", "provider": "🇩🇪 Freakhosting AS215703 (FREYA)", "url": "https://freya.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"},
+    {"id": "CH.NG-01", "provider": "🇨🇭 NetGrid Host AS202051 (ANUBIS)", "url": "https://anubis.koshka.monster/img/thumb/36d5b75dd7736d16.jpg"}
 ]

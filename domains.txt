@@ -1,9 +1,12 @@
 abaddon.koshka.monster
 ziz.koshka.monster
 solomon.koshka.monster
-raphael.koshka.monster
 moloch.koshka.monster
-seraphim.koshka.monster
 uriel.koshka.monster
 nehemiah.koshka.monster
-behemoth.koshka.monster
+bastet.koshka.monster
+sekhmet.koshka.monster
+bakeneko.koshka.monster
+nekomata.koshka.monster
+freya.koshka.monster
+anubis.koshka.monster

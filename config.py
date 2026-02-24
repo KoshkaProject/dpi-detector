@@ -11,8 +11,8 @@ TIMEOUT = 7.0
 TIMEOUT_TCP_16_20 = 12.0
 
 # === Повторные попытки ===
-DOMAIN_CHECK_RETRIES = 1
-TCP_16_20_CHECK_RETRIES = 1
+DOMAIN_CHECK_RETRIES = 10
+TCP_16_20_CHECK_RETRIES = 10
 
 # разница между тестами при DOMAIN_CHECK_RETRIES = 2 для обнаружения балансировщика у провайдера
 DPI_VARIANCE_THRESHOLD = 10  # %
@@ -59,18 +59,21 @@ DNS_CHECK_DOMAINS = [
     "abaddon.koshka.monster",
     "ziz.koshka.monster",
     "solomon.koshka.monster",
-    "raphael.koshka.monster",
     "moloch.koshka.monster",
-    "seraphim.koshka.monster",
     "uriel.koshka.monster",
     "nehemiah.koshka.monster",
-    "behemoth.koshka.monster",
+    "bastet.koshka.monster",
+    "sekhmet.koshka.monster",
+    "bakeneko.koshka.monster",
+    "nekomata.koshka.monster",
+    "freya.koshka.monster",
+    "anubis.koshka.monster",
 ]
 
 DNS_UDP_SERVERS = [
     ("8.8.8.8",        "Google"),
-    ("11.1.1.1",       "Cloudflare"),
-    ("19.9.9.9",       "Quad9"),
+    ("1.1.1.1",        "Cloudflare"),
+    ("9.9.9.9",        "Quad9"),
     ("194.140.14.14",  "AdGuard"),
     ("77.88.8.8",      "Yandex"),
     ("223.5.5.5",      "Alibaba"),
