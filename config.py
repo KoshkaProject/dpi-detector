@@ -59,7 +59,6 @@ DNS_CHECK_DOMAINS = [
     "abaddon.koshka.monster",
     "ziz.koshka.monster",
     "solomon.koshka.monster",
-    "moloch.koshka.monster",
     "uriel.koshka.monster",
     "nehemiah.koshka.monster",
     "bastet.koshka.monster",
@@ -67,7 +66,6 @@ DNS_CHECK_DOMAINS = [
     "bakeneko.koshka.monster",
     "nekomata.koshka.monster",
     "freya.koshka.monster",
-    "anubis.koshka.monster",
 ]
 
 DNS_UDP_SERVERS = [

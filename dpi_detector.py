@@ -27,7 +27,7 @@ except ImportError as e:
     print("Установите зависимости: python -m pip install -r requirements.txt")
     sys.exit(1)
 
-console = Console(record=True)
+console = Console()
 
 # =================== Конфиг
 USE_IPV4_ONLY = config.USE_IPV4_ONLY
@@ -151,11 +151,77 @@ def load_tcp_targets(filepath="tcp_16_20_targets.json"):
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
     except FileNotFoundError:
-        console.print(f"[bold red]Ошибка чтения {filepath}: {e}[/bold red]")
+        console.print(f"[bold red]Ошибка чтения {filepath}: файл не найден[/bold red]")
         sys.exit(1)
 
 
-DOMAINS = load_domains()
+def fetch_domains_from_subscription(url: str) -> list:
+    """Загружает домены серверов из VPN-подписки (base64-encoded vless:// URIs)."""
+    import re as _re
+    import base64 as _b64
+    import subprocess as _sp
+
+    console.print(f"[dim]Загружаю подписку: {url}[/dim]")
+    try:
+        result = _sp.run(
+            ["curl", "-sS", "--connect-timeout", "10", "--max-time", "20",
+             "-H", "User-Agent: V2rayN", url],
+            capture_output=True, text=True, timeout=25
+        )
+        raw = result.stdout.strip()
+        if not raw:
+            raise ValueError(f"curl returned empty: {result.stderr}")
+    except Exception as e:
+        console.print(f"[yellow]curl failed ({e}), trying urllib...[/yellow]")
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "V2rayN"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode().strip()
+
+    lines = raw.splitlines()
+    if any(l.strip().startswith("vless://") for l in lines):
+        decoded = raw
+    else:
+        clean = "".join(l.strip() for l in lines)
+        clean = _re.sub(r'[^A-Za-z0-9+/=]', '', clean)
+        decoded = _b64.b64decode(clean).decode("utf-8", errors="ignore")
+
+    domains = set()
+    for line in decoded.strip().splitlines():
+        line = line.strip()
+        if not line.startswith("vless://"):
+            continue
+        try:
+            main_part = line.split("#")[0] if "#" in line else line
+            server_part = main_part.replace("vless://", "").split("@", 1)[1]
+            host = server_part.rsplit(":", 1)[0]
+            # Skip raw IPs, keep only domain names
+            if not _re.match(r'^\d+\.\d+\.\d+\.\d+$', host) and host:
+                domains.add(host)
+        except Exception:
+            continue
+
+    result_list = sorted(domains)
+    console.print(f"[dim]Найдено {len(result_list)} уникальных доменов из подписки[/dim]")
+    return result_list
+
+
+# Parse --sub argument early (before loading domains)
+DEFAULT_SUB_URL = "https://sub.koshka.monster/xmc2McWGr_r71wzG"
+
+_sub_url = DEFAULT_SUB_URL
+_no_sub = False
+for _i, _arg in enumerate(sys.argv):
+    if _arg == "--sub" and _i + 1 < len(sys.argv):
+        _sub_url = sys.argv[_i + 1]
+    elif _arg == "--no-sub":
+        _no_sub = True
+
+if _no_sub:
+    DOMAINS = load_domains()
+else:
+    DOMAINS = fetch_domains_from_subscription(_sub_url)
+    DNS_CHECK_DOMAINS = DOMAINS[:20]
 TCP_16_20_ITEMS = load_tcp_targets()
 
 if USE_IPV4_ONLY:
@@ -947,7 +1013,7 @@ async def check_tcp_tls_single(
                         content_length = response.headers.get("content-length", "")
                         try:
                             content_len = int(content_length) if content_length else 0
-                        except:
+                        except (ValueError, TypeError):
                             content_len = 0
 
                         if content_len > 0 and content_len < BODY_INSPECT_LIMIT:
@@ -1047,7 +1113,7 @@ async def check_tcp_tls(
         if attempt < DOMAIN_CHECK_RETRIES - 1:
             await asyncio.sleep(0.1)
 
-    # Приоритет критическим ошибкам
+    # Приоритет критическим ошибкам (DPI, блокировки — даже 1 из N достаточно)
     critical_markers = [
         "TCP16-20", "DPI RESET", "DPI ABORT", "DPI CLOSE", "ISP PAGE",
         "BLOCKED", "TCP RST", "TCP ABORT", "TLS MITM", "TLS DPI", "TLS BLOCK",
@@ -1056,7 +1122,14 @@ async def check_tcp_tls(
         if any(marker in status for marker in critical_markers):
             return (status, detail, elapsed)
 
-    # Любые другие не-OK
+    # Для некритических ошибок (TIMEOUT, DNS FAIL и т.д.) — решаем по большинству
+    ok_count = sum(1 for s, _, _, _ in results if "OK" in s)
+    if ok_count > len(results) // 2:
+        # Большинство OK — значит домен работает, таймауты случайные
+        ok_results = [(s, d, e) for s, d, _, e in results if "OK" in s]
+        return ok_results[0]
+
+    # Большинство не-OK — реальная проблема
     for status, detail, _, elapsed in results:
         if "OK" not in status:
             return (status, detail, elapsed)
@@ -1410,6 +1483,7 @@ async def resolve_worker(domain_raw: str, semaphore: asyncio.Semaphore, stub_ips
         "t13_res": ("[dim]—[/dim]", "", 0.0),
         "t12_res": ("[dim]—[/dim]", "", 0.0),
         "nosni_res": ("[dim]—[/dim]", "", 0.0),
+        "frag_res": ("[dim]—[/dim]", "", 0.0),
         "http_res": ("[dim]—[/dim]", ""),
     }
 
@@ -1504,6 +1578,238 @@ async def check_tls_no_sni(ip: str, port: int = 443, timeout: float = None) -> T
         return ("[red]ERR[/red]", type(e).__name__, time.time() - start)
 
 
+async def check_quic_udp(ip: str, port: int = 443, timeout: float = None) -> Tuple[str, str, float]:
+    """Отправляет QUIC Initial пакет на UDP 443, проверяет ответ.
+    Если получен любой ответ — UDP 443 открыт. Если таймаут — возможно блокировка."""
+    if timeout is None:
+        timeout = TIMEOUT
+    start = time.time()
+    try:
+        # Минимальный QUIC Initial пакет (Long Header, Version 1)
+        # Формат: flags(1) + version(4) + dcid_len(1) + dcid(8) + scid_len(1) + scid(8)
+        #        + token_len(1) + length(2) + packet_number(1) + padding
+        import struct
+        import os as _os
+        dcid = _os.urandom(8)
+        scid = _os.urandom(8)
+        # Long header Initial packet
+        header = struct.pack('!B', 0xC3)  # Long header + Initial + PN length 4
+        header += struct.pack('!I', 0x00000001)  # QUIC version 1
+        header += struct.pack('!B', len(dcid)) + dcid
+        header += struct.pack('!B', len(scid)) + scid
+        header += struct.pack('!B', 0)  # token length = 0
+        # Payload: minimal crypto frame + padding to 1200 bytes (QUIC minimum)
+        payload = b'\x06\x00\x40\x01\x00' + b'\x00' * 50  # crypto frame stub
+        # Length field (2 bytes, includes packet number)
+        pkt_num = struct.pack('!I', 0)
+        total_payload = pkt_num + payload
+        length_val = len(total_payload)
+        header += struct.pack('!H', 0x4000 | length_val)  # 2-byte varint
+        packet = header + total_payload
+        # Pad to at least 1200 bytes (QUIC Initial minimum)
+        if len(packet) < 1200:
+            packet += b'\x00' * (1200 - len(packet))
+
+        loop = asyncio.get_running_loop()
+
+        # Используем blocking socket в executor для совместимости с macOS
+        def _quic_probe():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(timeout)
+            try:
+                sock.sendto(packet, (ip, port))
+                data, addr = sock.recvfrom(4096)
+                return data
+            finally:
+                sock.close()
+
+        data = await asyncio.wait_for(
+            loop.run_in_executor(None, _quic_probe),
+            timeout=timeout + 1
+        )
+        elapsed = time.time() - start
+        if data:
+            return ("[green]OK[/green]", "", elapsed)
+        return ("[yellow]EMPTY[/yellow]", "Empty response", elapsed)
+
+    except asyncio.TimeoutError:
+        return ("[red]BLOCKED[/red]", "UDP timeout", time.time() - start)
+    except ConnectionRefusedError:
+        # ICMP port unreachable — UDP works, but server doesn't support QUIC
+        return ("[yellow]NO QUIC[/yellow]", "Port unreachable", time.time() - start)
+    except OSError as e:
+        elapsed = time.time() - start
+        if e.errno in (errno.ECONNREFUSED, WSAECONNREFUSED):
+            return ("[yellow]NO QUIC[/yellow]", "Refused", elapsed)
+        if e.errno in (errno.ENETUNREACH, WSAENETUNREACH, errno.EHOSTUNREACH, WSAEHOSTUNREACH):
+            return ("[bold red]UNREACH[/bold red]", "Unreachable", elapsed)
+        return ("[red]ERR[/red]", f"errno={e.errno}", elapsed)
+    except Exception as e:
+        return ("[red]ERR[/red]", type(e).__name__, time.time() - start)
+
+
+async def check_tls_fragmented(domain: str, ip: str, port: int = 443,
+                                timeout: float = None) -> Tuple[str, str, float]:
+    """Проверяет обход DPI фрагментацией TLS ClientHello.
+    Использует MemoryBIO для перехвата ClientHello, разбивает его на 2 части
+    и отправляет с задержкой через raw TCP сокет."""
+    if timeout is None:
+        timeout = TIMEOUT
+    start = time.time()
+    try:
+        # Шаг 1: Генерируем ClientHello через MemoryBIO
+        incoming = ssl.MemoryBIO()
+        outgoing = ssl.MemoryBIO()
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        sslobj = ctx.wrap_bio(incoming, outgoing, server_hostname=domain)
+        try:
+            sslobj.do_handshake()
+        except ssl.SSLWantReadError:
+            pass
+
+        client_hello = outgoing.read()
+        if not client_hello:
+            return ("[dim]ERR[/dim]", "No ClientHello", time.time() - start)
+
+        # Шаг 2: Открываем raw TCP и отправляем фрагментами
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, port),
+            timeout=timeout
+        )
+
+        try:
+            # Разбиваем ClientHello на 2 части (в районе SNI)
+            split_point = min(len(client_hello) // 2, 120)
+            part1 = client_hello[:split_point]
+            part2 = client_hello[split_point:]
+
+            # TCP_NODELAY чтобы фрагменты шли отдельными пакетами
+            transport = writer.transport
+            sock = transport.get_extra_info('socket')
+            if sock:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+            writer.write(part1)
+            await writer.drain()
+            await asyncio.sleep(0.1)  # Задержка между фрагментами
+            writer.write(part2)
+            await writer.drain()
+
+            # Шаг 3: Ждём ответ сервера (ServerHello)
+            try:
+                data = await asyncio.wait_for(reader.read(4096), timeout=timeout)
+                elapsed = time.time() - start
+                if data and len(data) > 5:
+                    # Получили ответ — TLS handshake продолжился
+                    # Проверяем что это ServerHello (content type 0x16)
+                    if data[0] == 0x16:
+                        return ("[green]BYPASS[/green]", "Фрагментация работает", elapsed)
+                    else:
+                        return ("[green]BYPASS[/green]", "Ответ получен", elapsed)
+                elif data:
+                    return ("[yellow]PARTIAL[/yellow]", f"{len(data)}B", elapsed)
+                else:
+                    return ("[red]CLOSED[/red]", "Пустой ответ", elapsed)
+            except asyncio.TimeoutError:
+                return ("[red]BLOCKED[/red]", "Таймаут после фрагментации", time.time() - start)
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    except asyncio.TimeoutError:
+        return ("[red]TIMEOUT[/red]", "TCP timeout", time.time() - start)
+    except ConnectionResetError:
+        return ("[red]TCP RST[/red]", "Reset", time.time() - start)
+    except ConnectionRefusedError:
+        return ("[red]REFUSED[/red]", "Refused", time.time() - start)
+    except OSError as e:
+        elapsed = time.time() - start
+        if e.errno in (errno.ECONNRESET, WSAECONNRESET):
+            return ("[red]TCP RST[/red]", "Reset", elapsed)
+        return ("[red]ERR[/red]", f"errno={e.errno}", elapsed)
+    except Exception as e:
+        return ("[red]ERR[/red]", type(e).__name__, time.time() - start)
+
+
+async def check_http2_alpn(domain: str, timeout: float = None) -> Tuple[str, str, float]:
+    """Проверяет доступность HTTP/2 через ALPN.
+    Использует httpx с http2=True для корректного согласования."""
+    if timeout is None:
+        timeout = TIMEOUT
+    start = time.time()
+    try:
+        transport = httpx.AsyncHTTPTransport(verify=False, http2=True, retries=0)
+        async with httpx.AsyncClient(
+            transport=transport, timeout=timeout, follow_redirects=False
+        ) as client:
+            response = await client.get(
+                f"https://{domain}",
+                headers={"User-Agent": USER_AGENT}
+            )
+            elapsed = time.time() - start
+            http_version = response.http_version
+            await response.aclose()
+            if http_version == "HTTP/2":
+                return ("[green]H2[/green]", "HTTP/2", elapsed)
+            elif http_version == "HTTP/1.1":
+                return ("[green]H1[/green]", "HTTP/1.1", elapsed)
+            else:
+                return ("[green]OK[/green]", http_version or "?", elapsed)
+
+    except httpx.ConnectTimeout:
+        return ("[red]TIMEOUT[/red]", "Timeout", time.time() - start)
+    except httpx.ConnectError as e:
+        elapsed = time.time() - start
+        full_text = _collect_error_text(e)
+        if _find_cause_of_type(e, ConnectionResetError) or "reset" in full_text:
+            return ("[bold red]TCP RST[/bold red]", "Reset", elapsed)
+        if "timed out" in full_text:
+            return ("[red]TIMEOUT[/red]", "Timeout", elapsed)
+        return ("[red]CONN ERR[/red]", "", elapsed)
+    except httpx.TimeoutException:
+        return ("[red]TIMEOUT[/red]", "Timeout", time.time() - start)
+    except Exception as e:
+        elapsed = time.time() - start
+        err_str = str(e).lower()
+        if "reset" in err_str or "aborted" in err_str:
+            return ("[bold red]TLS DPI[/bold red]", "Обрыв", elapsed)
+        return ("[red]ERR[/red]", type(e).__name__, elapsed)
+
+
+
+async def frag_phase_worker(entry: dict, semaphore: asyncio.Semaphore) -> None:
+    """Фаза Frag: проверяет обход DPI фрагментацией ClientHello.
+    Запускается ТОЛЬКО если на домене обнаружен TLS DPI."""
+    if entry["dns_fake"] is not False:
+        return
+    # Проверяем есть ли DPI на этом домене (по результатам TLS фаз)
+    DPI_INDICATORS = ("TLS DPI", "TLS MITM", "TLS BLOCK", "TIMEOUT")
+    t12_status = entry["t12_res"][0]
+    t13_status = entry["t13_res"][0]
+    has_dpi = any(m in t12_status or m in t13_status for m in DPI_INDICATORS)
+    if not has_dpi:
+        entry["frag_res"] = ("[dim]—[/dim]", "", 0.0)
+        return
+    ip = entry["resolved_ip"]
+    domain = entry["domain"]
+    if not ip:
+        entry["frag_res"] = ("[dim]—[/dim]", "", 0.0)
+        return
+    async with semaphore:
+        try:
+            entry["frag_res"] = await check_tls_fragmented(domain, ip)
+        except Exception:
+            entry["frag_res"] = ("[dim]ERR[/dim]", "Unknown error", 0.0)
+
+
+
+
 async def tcp_raw_phase_worker(entry: dict, semaphore: asyncio.Semaphore) -> None:
     """Фаза TCP raw: проверяет сырое TCP подключение к IP."""
     if entry["dns_fake"] is not False:
@@ -1570,6 +1876,7 @@ def _build_row(entry: dict) -> list:
     t12_status, t12_detail, t12_elapsed = entry["t12_res"]
     t13_status, t13_detail, t13_elapsed = entry["t13_res"]
     nosni_status, nosni_detail, nosni_elapsed = entry["nosni_res"]
+    frag_status, frag_detail, frag_elapsed = entry["frag_res"]
     http_status, http_detail = entry["http_res"]
 
     details = []
@@ -1589,21 +1896,26 @@ def _build_row(entry: dict) -> list:
 
     if dnosni: details.append(f"noSNI:{dnosni}")
 
+    # Показываем Frag в деталях только если есть DPI (иначе это шум)
+    dfrag = _clean_detail(frag_detail)
+    has_dpi = any(m in col for col in (t12_status, t13_status)
+                  for m in ("TLS DPI", "TLS MITM", "TLS BLOCK", "TIMEOUT"))
+    if dfrag and has_dpi: details.append(f"Frag:{dfrag}")
+
     all_times = [t for t in (tcp_elapsed, t12_elapsed, t13_elapsed, nosni_elapsed) if t > 0]
     request_time = min(all_times) if all_times else 0
     if request_time > 0:
         details.append(f"{request_time:.1f}s")
 
     detail_str = " | ".join([d for d in details if d])
-    return [domain, tcp_status, t12_status, t13_status, nosni_status, http_status, detail_str, entry["resolved_ip"]]
+    return [domain, tcp_status, t12_status, t13_status, nosni_status,
+            frag_status, http_status, detail_str, entry["resolved_ip"]]
 
 
 async def tcp_16_20_worker(item: dict, semaphore: asyncio.Semaphore, stub_ips: set = None):
     if stub_ips is None:
         stub_ips = set()
 
-    # Извлекаем домен из URL
-    from urllib.parse import urlparse
     parsed = urlparse(item["url"])
     domain = parsed.hostname or parsed.path.split('/')[0]
 
@@ -1658,48 +1970,132 @@ async def _collect_stub_ips_silently() -> set:
     return stub_ips
 
 
-async def ask_test_selection() -> str:
-    """Запрашивает у пользователя выбор тестов."""
-    valid = {"1", "2", "3", "12", "13", "23", "123"}
-    console.print(
-        "\n[bold]Какие тесты запустить?[/bold]\n"
-        "  [cyan]1[/cyan]   — DNS целостность\n"
-        "  [cyan]2[/cyan]   — Проверка доменов (TLS + HTTP injection)\n"
-        "  [cyan]3[/cyan]   — TCP 16-20KB блокировка\n"
-        "  [cyan]123[/cyan] — Все тесты [dim](по умолчанию)[/dim]"
+
+async def run_quic_test(semaphore: asyncio.Semaphore) -> dict:
+    """Тест блокировки QUIC/UDP 443 через известные QUIC-серверы."""
+    console.print("\n[bold]Проверка QUIC/UDP 443[/bold]")
+    console.print("[dim]Тестирование через серверы с поддержкой QUIC[/dim]\n")
+
+    # Резолвим IP динамически для точности
+    quic_domains = [
+        ("google.com",      "Google"),
+        ("cloudflare.com",  "Cloudflare"),
+        ("microsoft.com",   "Microsoft"),
+        ("wikipedia.org",   "Wikipedia"),
+    ]
+    quic_servers = []
+    for domain, name in quic_domains:
+        ip = await get_resolved_ip(domain)
+        if ip:
+            quic_servers.append((ip, f"{name} ({domain})"))
+    if not quic_servers:
+        console.print("[yellow]Не удалось разрезолвить QUIC-серверы[/yellow]")
+        return {"ok": 0, "blocked": 0, "total": 0}
+
+    table = Table(
+        show_header=True, header_style="bold magenta", border_style="dim"
     )
-    loop = asyncio.get_running_loop()
-    try:
-        raw = (await loop.run_in_executor(None, lambda: input("\nВведите выбор [123]: "))).strip()
-    except (EOFError, KeyboardInterrupt):
-        raise KeyboardInterrupt
+    table.add_column("Сервер", style="cyan", width=28)
+    table.add_column("Статус", justify="center")
+    table.add_column("Детали", style="dim")
 
-    if raw == "":
-        return "123"
-    if raw in valid:
-        return raw
+    ok = 0
+    blocked = 0
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        task_id = progress.add_task("QUIC проверка...", total=len(quic_servers))
+        for ip, name in quic_servers:
+            async with semaphore:
+                status, detail, elapsed = await check_quic_udp(ip, timeout=5.0)
+            if "OK" in status:
+                ok += 1
+                detail = f"{elapsed:.1f}s"
+            else:
+                blocked += 1
+            table.add_row(name, status, detail)
+            progress.update(task_id, advance=1)
 
-    console.print("[yellow]Неверный ввод, запускаем все тесты.[/yellow]")
-    return "123"
+    console.print(table)
+
+    if blocked == len(quic_servers):
+        console.print("[bold red]UDP 443 полностью заблокирован — QUIC/HTTP3/Hysteria2 не работают[/bold red]")
+    elif blocked > 0:
+        console.print(f"[yellow]UDP 443 частично заблокирован ({blocked}/{len(quic_servers)})[/yellow]")
+
+    return {"ok": ok, "blocked": blocked, "total": len(quic_servers)}
+
+
+async def run_h2_test(semaphore: asyncio.Semaphore) -> dict:
+    """Тест HTTP/2 ALPN через известные публичные сайты."""
+    console.print("\n[bold]Проверка HTTP/2 ALPN[/bold]")
+    console.print("[dim]Тестирование согласования ALPN на публичных сайтах[/dim]\n")
+
+    h2_targets = [
+        "google.com",
+        "cloudflare.com",
+        "github.com",
+        "microsoft.com",
+        "wikipedia.org",
+    ]
+
+    table = Table(
+        show_header=True, header_style="bold magenta", border_style="dim"
+    )
+    table.add_column("Сайт", style="cyan", width=20)
+    table.add_column("ALPN", justify="center")
+    table.add_column("Детали", style="dim")
+
+    ok = 0
+    blocked = 0
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        task_id = progress.add_task("HTTP/2 проверка...", total=len(h2_targets))
+        for domain in h2_targets:
+            async with semaphore:
+                status, detail, elapsed = await check_http2_alpn(domain)
+            if "OK" in status or "H2" in status or "H1" in status:
+                ok += 1
+                if elapsed > 0:
+                    detail = f"{detail} ({elapsed:.1f}s)" if detail else f"{elapsed:.1f}s"
+            elif "DPI" in status or "RST" in status:
+                blocked += 1
+            table.add_row(domain, status, detail)
+            progress.update(task_id, advance=1)
+
+    console.print(table)
+
+    if blocked > 0:
+        console.print(f"[yellow]HTTP/2 ALPN заблокирован у {blocked}/{len(h2_targets)} сайтов[/yellow]")
+
+    return {"ok": ok, "blocked": blocked, "total": len(h2_targets)}
 
 
 async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
-    """Тест 2: проверка доменов (TCP → TLS1.3 → TLS1.2 → no-SNI → HTTP), горизонтальное сканирование.
+    """Тест 2: проверка доменов (TCP → TLS → QUIC → Frag → H2 → HTTP).
     Возвращает словарь со статистикой для итогового вывода."""
     console.print(
-        "\n[bold]Проверка доменов (TCP + TLS + SNI + HTTP)[/bold]\n"
+        "\n[bold]Проверка доменов (TCP + TLS + Frag + HTTP)[/bold]\n"
     )
 
     table = Table(
         show_header=True, header_style="bold magenta", border_style="dim"
     )
-    table.add_column("Домен", style="cyan", no_wrap=True, width=18)
-    table.add_column("TCP", justify="center")
-    table.add_column("TLS1.2", justify="center")
-    table.add_column("TLS1.3", justify="center")
-    table.add_column("no-SNI", justify="center")
-    table.add_column("HTTP", justify="center")
+    table.add_column("Домен", style="cyan", no_wrap=True, max_width=20)
+    table.add_column("TCP", justify="center", min_width=3)
+    table.add_column("T12", justify="center", min_width=4)
+    table.add_column("T13", justify="center", min_width=4)
+    table.add_column("SNI", justify="center", min_width=4)
+    table.add_column("Frag", justify="center", min_width=4)
+    table.add_column("HTTP", justify="center", min_width=4)
     table.add_column("Детали", style="dim", no_wrap=True)
+
+    total_phases = 6
 
     # ── Фаза 0: DNS-резолв всех доменов ──────────────────────────────────────
     entries: list[dict] = []
@@ -1708,7 +2104,7 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
         TextColumn("[progress.description]{task.description}"),
         transient=True,
     ) as progress:
-        task_id = progress.add_task("Фаза 0/5: DNS-резолв...", total=len(DOMAINS))
+        task_id = progress.add_task(f"Фаза 0/{total_phases}: DNS-резолв...", total=len(DOMAINS))
         dns_tasks = [resolve_worker(d, semaphore, stub_ips) for d in DOMAINS]
         completed = 0
         for future in asyncio.as_completed(dns_tasks):
@@ -1718,7 +2114,7 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
             progress.update(
                 task_id,
                 completed=completed,
-                description=f"Фаза 0/5: DNS-резолв ({completed}/{len(DOMAINS)})...",
+                description=f"Фаза 0/{total_phases}: DNS-резолв ({completed}/{len(DOMAINS)})...",
             )
 
     entries.sort(key=lambda e: e["domain"])
@@ -1729,7 +2125,7 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
         TextColumn("[progress.description]{task.description}"),
         transient=True,
     ) as progress:
-        task_id = progress.add_task("Фаза 1/5: TCP...", total=len(entries))
+        task_id = progress.add_task(f"Фаза 1/{total_phases}: TCP...", total=len(entries))
         tcp_tasks = [tcp_raw_phase_worker(e, semaphore) for e in entries]
         completed = 0
         for future in asyncio.as_completed(tcp_tasks):
@@ -1738,7 +2134,7 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
             progress.update(
                 task_id,
                 completed=completed,
-                description=f"Фаза 1/5: TCP ({completed}/{len(entries)})...",
+                description=f"Фаза 1/{total_phases}: TCP ({completed}/{len(entries)})...",
             )
 
     # ── Фаза 2: TLS 1.3 ───────────────────────────────────────────────────────
@@ -1747,7 +2143,7 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
         TextColumn("[progress.description]{task.description}"),
         transient=True,
     ) as progress:
-        task_id = progress.add_task("Фаза 2/5: TLS 1.3...", total=len(entries))
+        task_id = progress.add_task(f"Фаза 2/{total_phases}: TLS 1.3...", total=len(entries))
         t13_tasks = [tls_phase_worker(e, "TLSv1.3", semaphore) for e in entries]
         completed = 0
         for future in asyncio.as_completed(t13_tasks):
@@ -1756,7 +2152,7 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
             progress.update(
                 task_id,
                 completed=completed,
-                description=f"Фаза 2/5: TLS 1.3 ({completed}/{len(entries)})...",
+                description=f"Фаза 2/{total_phases}: TLS 1.3 ({completed}/{len(entries)})...",
             )
 
     # ── Фаза 3: TLS 1.2 ───────────────────────────────────────────────────────
@@ -1765,7 +2161,7 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
         TextColumn("[progress.description]{task.description}"),
         transient=True,
     ) as progress:
-        task_id = progress.add_task("Фаза 3/5: TLS 1.2...", total=len(entries))
+        task_id = progress.add_task(f"Фаза 3/{total_phases}: TLS 1.2...", total=len(entries))
         t12_tasks = [tls_phase_worker(e, "TLSv1.2", semaphore) for e in entries]
         completed = 0
         for future in asyncio.as_completed(t12_tasks):
@@ -1774,7 +2170,7 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
             progress.update(
                 task_id,
                 completed=completed,
-                description=f"Фаза 3/5: TLS 1.2 ({completed}/{len(entries)})...",
+                description=f"Фаза 3/{total_phases}: TLS 1.2 ({completed}/{len(entries)})...",
             )
 
     # ── Фаза 4: TLS no-SNI ────────────────────────────────────────────────────
@@ -1783,7 +2179,7 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
         TextColumn("[progress.description]{task.description}"),
         transient=True,
     ) as progress:
-        task_id = progress.add_task("Фаза 4/5: TLS no-SNI...", total=len(entries))
+        task_id = progress.add_task(f"Фаза 4/{total_phases}: TLS no-SNI...", total=len(entries))
         nosni_tasks = [tls_no_sni_phase_worker(e, semaphore) for e in entries]
         completed = 0
         for future in asyncio.as_completed(nosni_tasks):
@@ -1792,16 +2188,34 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
             progress.update(
                 task_id,
                 completed=completed,
-                description=f"Фаза 4/5: TLS no-SNI ({completed}/{len(entries)})...",
+                description=f"Фаза 4/{total_phases}: TLS no-SNI ({completed}/{len(entries)})...",
             )
 
-    # ── Фаза 5: HTTP injection ─────────────────────────────────────────────────
+    # ── Фаза 5: TLS фрагментация ─────────────────────────────────────────────
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         transient=True,
     ) as progress:
-        task_id = progress.add_task("Фаза 5/5: HTTP...", total=len(entries))
+        task_id = progress.add_task(f"Фаза 5/{total_phases}: Фрагментация...", total=len(entries))
+        frag_tasks = [frag_phase_worker(e, semaphore) for e in entries]
+        completed = 0
+        for future in asyncio.as_completed(frag_tasks):
+            await future
+            completed += 1
+            progress.update(
+                task_id,
+                completed=completed,
+                description=f"Фаза 5/{total_phases}: Фрагментация ({completed}/{len(entries)})...",
+            )
+
+    # ── Фаза 6: HTTP injection ─────────────────────────────────────────────────
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        task_id = progress.add_task(f"Фаза 6/{total_phases}: HTTP...", total=len(entries))
         http_tasks = [http_phase_worker(e, semaphore) for e in entries]
         completed = 0
         for future in asyncio.as_completed(http_tasks):
@@ -1810,7 +2224,7 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
             progress.update(
                 task_id,
                 completed=completed,
-                description=f"Фаза 5/5: HTTP ({completed}/{len(entries)})...",
+                description=f"Фаза 6/{total_phases}: HTTP ({completed}/{len(entries)})...",
             )
 
     results = [_build_row(e) for e in entries]
@@ -1820,15 +2234,15 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
     resolved_ips_counter = {}
 
     for r in results:
-        if len(r) > 7:
-            resolved_ip = r[7]
+        if len(r) > 8:
+            resolved_ip = r[8]
             if resolved_ip and stub_ips and resolved_ip in stub_ips:
                 resolved_ips_counter[resolved_ip] = resolved_ips_counter.get(resolved_ip, 0) + 1
         if "DNS FAIL" in r[1] or "DNS FAIL" in r[2] or "DNS FAIL" in r[3]:
             dns_fail_count += 1
 
     for r in results:
-        table.add_row(*r[:7])
+        table.add_row(*r[:8])
 
     console.print(table)
 
@@ -1846,19 +2260,34 @@ async def run_domains_test(semaphore: asyncio.Semaphore, stub_ips: set) -> dict:
             console.print(f"У {dns_fail_count} сайтов обнаружен DNS FAIL (Домен не найден)")
         console.print("[yellow]Рекомендация: Настройте DoH/DoT на вашем устройстве, роутере или VPN[/yellow]\n")
 
-    # Статистика: TLS столбцы — индексы 2 (TLS1.2) и 3 (TLS1.3)
-    ok_count      = sum(1 for r in results if "OK" in r[2] or "OK" in r[3])
-    blocked_count = sum(1 for r in results if any(
-        m in r[1] or m in r[2] or m in r[3] or m in r[4]
-        for m in ("TLS DPI", "TLS MITM", "TLS BLOCK", "ISP PAGE", "BLOCKED", "TCP RST", "TCP ABORT", "REFUSED", "UNREACH")
-    ))
-    timeout_count = sum(1 for r in results if "TIMEOUT" in r[2] or "TIMEOUT" in r[3])
-    dns_fail_count_local = sum(1 for r in results if "DNS FAIL" in r[1])
+    # Статистика: классифицируем каждый домен по худшему результату
+    # Приоритет: blocked > dpi > timeout > ok
+    DPI_MARKERS = ("TLS DPI", "TLS MITM", "TLS BLOCK", "ISP PAGE", "BLOCKED", "TCP RST", "TCP ABORT", "REFUSED", "UNREACH")
+    clean_count = 0
+    dpi_count = 0
+    timeout_count = 0
+    dns_fail_count_local = 0
+
+    for r in results:
+        cols = (r[1], r[2], r[3], r[4])  # TCP, TLS1.2, TLS1.3, no-SNI
+        has_dpi = any(m in col for col in cols for m in DPI_MARKERS)
+        has_ok = "OK" in r[2] or "OK" in r[3]
+        has_timeout = "TIMEOUT" in r[2] or "TIMEOUT" in r[3]
+        has_dns_fail = "DNS FAIL" in r[1]
+
+        if has_dns_fail:
+            dns_fail_count_local += 1
+        elif has_dpi:
+            dpi_count += 1
+        elif has_timeout:
+            timeout_count += 1
+        else:
+            clean_count += 1
 
     return {
         "total": len(DOMAINS),
-        "ok": ok_count,
-        "blocked": blocked_count,
+        "ok": clean_count,
+        "dpi": dpi_count,
         "timeout": timeout_count,
         "dns_fail": dns_fail_count_local,
     }
@@ -1992,8 +2421,8 @@ async def main():
         console.print()
 
     console.print(
-        "[bold cyan]DPI Detector v1.4[/bold cyan] | "
-        "[yellow]DNS + TCP/TLS + HTTP + TCP 16-20KB Test[/yellow]"
+        "[bold cyan]DPI Detector v2.0[/bold cyan] | "
+        "[yellow]DNS + TLS + QUIC + Frag + H2 + TCP 16-20KB[/yellow]"
     )
     console.print(
         f"Тестирование {len(DOMAINS)} доменов + {len(TCP_16_20_ITEMS)} TCP 16-20KB целей."
@@ -2012,158 +2441,137 @@ async def main():
         f"[dim]Только IPv4: {USE_IPV4_ONLY}[/dim]\n"
     )
 
-    # Выбор тестов — спрашиваем один раз, запоминаем для повтора
-    selection = await ask_test_selection()
-    run_dns     = "1" in selection
-    run_domains = "2" in selection
-    run_tcp     = "3" in selection
-
-    # Вопрос о сохранении в файл
-    save_to_file = False
-    result_path = None
-    loop = asyncio.get_running_loop()
-    try:
-        save_raw = (await loop.run_in_executor(
-            None, lambda: input("\nСохранять результаты в файл? [y/N]: ")
-        )).strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        raise KeyboardInterrupt
-    if save_raw in ("y", "yes", "д", "да"):
-        save_to_file = True
-        result_path = os.path.join(get_exe_dir(), "dpi_detector_results.txt")
-
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-    first_run = True
 
-    # Основной цикл: тест → предложение повторить
-    while True:
-        stub_ips: set = set()
-        dns_intercept_count = 0
-        if run_dns and DNS_CHECK_ENABLED:
-            stub_ips, dns_intercept_count = await check_dns_integrity()
-        elif DNS_CHECK_ENABLED and (run_domains or run_tcp):
-            stub_ips = await _collect_stub_ips_silently()
+    stub_ips: set = set()
+    dns_intercept_count = 0
+    if DNS_CHECK_ENABLED:
+        stub_ips, dns_intercept_count = await check_dns_integrity()
 
-        domain_stats = None
-        tcp_stats = None
+    # QUIC тест
+    quic_stats = await run_quic_test(semaphore)
 
-        if run_domains:
-            domain_stats = await run_domains_test(semaphore, stub_ips)
+    # HTTP/2 тест
+    h2_stats = await run_h2_test(semaphore)
 
-        if run_tcp:
-            tcp_stats = await run_tcp_test(semaphore, stub_ips)
+    domain_stats = await run_domains_test(semaphore, stub_ips)
+    tcp_stats = await run_tcp_test(semaphore, stub_ips)
 
-        # Итоговая сводка — показываем если хотя бы 2 теста запущено
-        dns_stats = None
-        if run_dns:
-            dns_stats = {
-                "intercept": dns_intercept_count,
-                "total": len(DNS_CHECK_DOMAINS),
-            }
+    # Итоговая сводка
+    dns_stats = {
+        "intercept": dns_intercept_count,
+        "total": len(DNS_CHECK_DOMAINS),
+    }
 
-        active_tests = sum([run_dns, run_domains, run_tcp])
-        if active_tests >= 2:
-            console.print()
-            summary_lines = []
+    console.print()
+    summary_lines = []
 
-            if run_dns and dns_stats:
-                dns_ok = dns_stats["total"] - dns_stats["intercept"]
-                if dns_stats["intercept"] > 0:
-                    summary_lines.append(
-                        f"[bold]DNS[/bold]         "
-                        f"[green]√ {dns_ok}/{dns_stats['total']} не подменяются[/green]"
-                        f"  [red]× {dns_stats['intercept']} подмена[/red]"
-                    )
-                else:
-                    summary_lines.append(
-                        f"[bold]DNS[/bold]         "
-                        f"[green]√ {dns_ok}/{dns_stats['total']} не подменяются[/green]"
-                    )
-
-            if domain_stats:
-                d = domain_stats
-                d_ok_pct = int(d["ok"] / d["total"] * 100) if d["total"] else 0
-                summary_lines.append(
-                    f"[bold]Домены[/bold]      "
-                    f"[green]√ {d['ok']}/{d['total']} OK[/green]"
-                    + (f"  [red]× {d['blocked']} заблок.[/red]" if d['blocked'] else "")
-                    + (f"  [yellow]⏱ {d['timeout']} таймаут[/yellow]" if d['timeout'] else "")
-                    + f"  [dim]({d_ok_pct}%)[/dim]"
-                )
-
-            if tcp_stats:
-                t = tcp_stats
-                t_ok_pct = int(t["ok"] / t["total"] * 100) if t["total"] else 0
-                summary_lines.append(
-                    f"[bold]TCP 16-20KB[/bold]  "
-                    f"[green]√ {t['ok']}/{t['total']} OK[/green]"
-                    + (f"  [red]× {t['blocked']} блок.[/red]" if t['blocked'] else "")
-                    + (f"  [yellow]≈ {t['mixed']} смеш.[/yellow]" if t['mixed'] else "")
-                    + f"  [dim]({t_ok_pct}%)[/dim]"
-                )
-
-            panel = Panel(
-                "\n".join(summary_lines),
-                title="[bold]Итог[/bold]",
-                border_style="cyan",
-                padding=(0, 1),
-                expand=False,
+    if DNS_CHECK_ENABLED:
+        dns_ok = dns_stats["total"] - dns_stats["intercept"]
+        if dns_stats["intercept"] > 0:
+            summary_lines.append(
+                f"[bold]DNS[/bold]         "
+                f"[green]√ {dns_ok}/{dns_stats['total']} не подменяются[/green]"
+                f"  [red]× {dns_stats['intercept']} подмена[/red]"
             )
-            console.print(panel)
-
-        # Легенда — только при первом запуске
-        if first_run:
-            console.print("\n[bold]Легенда статусов:[/bold]")
-            legend = [
-                ("TLS DPI",   "DPI манипулирует или обрывает TLS соединение"),
-                ("UNSUPP",    "Сервер не поддерживает TLS 1.3 (не блокировка)"),
-                ("TLS MITM",  "Man-in-the-Middle: подмена/проблемы с сертификатом"),
-                ("TLS BLOCK", "Блокировка версии TLS или протокола"),
-                ("SSL ERR",   "SSL/TLS ошибка (часто проблемы совместимости CDN/сервера)"),
-                ("ISP PAGE",  "Редирект на страницу провайдера или блок-страница"),
-                ("BLOCKED",   "HTTP 451 (Недоступно по юридическим причинам)"),
-                ("TIMEOUT",   "Таймаут соединения или чтения"),
-                ("REFUSED",   "Соединение отклонено (порт закрыт)"),
-                ("UNREACH",   "Сеть/хост недоступен (IP заблокирован)"),
-                ("DNS FAIL",  "Не удалось разрешить доменное имя"),
-                ("OK / REDIR","Сайт доступен (может быть редирект)"),
-            ]
-            console.print("\n[bold]Диагностика:[/bold]")
-            diag = [
-                ("TCP:OK + TLS:TIMEOUT",              "IP доступен, DPI блокирует TLS"),
-                ("TCP:OK + TLS:OK + noSNI:OK",        "SNI не фильтруется"),
-                ("TCP:OK + TLS:TIMEOUT + noSNI:OK",   "SNI-блокировка (DPI фильтрует по SNI)"),
-                ("T12:OK + T13:TIMEOUT",               "DPI блокирует TLS 1.3 на этом IP"),
-                ("TCP:TIMEOUT",                        "IP заблокирован на уровне TCP"),
-            ]
-            for pattern, desc in diag:
-                console.print(f"[dim]• [yellow]{pattern:<35}[/yellow] → {desc}[/dim]")
-            for term, desc in legend:
-                console.print(f"[dim]• [cyan]{term:<12}[/cyan] = {desc}[/dim]")
-            first_run = False
-
-        console.print("\n[bold green]Проверка завершена.[/bold green]")
-
-        # Сохранение в файл (перезаписываем при каждом прогоне)
-        if save_to_file and result_path:
-            try:
-                text = console.export_text()
-                with open(result_path, "w", encoding="utf-8") as f:
-                    f.write(text)
-                console.print(f"[dim]Результаты сохранены: [cyan]{result_path}[/cyan][/dim]")
-            except Exception as e:
-                console.print(f"[yellow]Не удалось сохранить файл: {e}[/yellow]")
-
-        # Предложение повторить — запускаем input в executor чтобы реально ждал
-        try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: input("\nНажмите Enter чтобы запустить тест ещё раз, Ctrl+C для выхода... ")
+        else:
+            summary_lines.append(
+                f"[bold]DNS[/bold]         "
+                f"[green]√ {dns_ok}/{dns_stats['total']} не подменяются[/green]"
             )
-        except (EOFError, KeyboardInterrupt):
-            raise KeyboardInterrupt
-        console.print()
+
+    if quic_stats:
+        q = quic_stats
+        quic_line = f"[bold]QUIC[/bold]        "
+        if q["ok"] == q["total"]:
+            quic_line += f"[green]√ {q['ok']}/{q['total']} UDP 443 открыт[/green]"
+        elif q["ok"] > 0:
+            quic_line += f"[yellow]~ {q['ok']}/{q['total']} частично[/yellow]"
+        else:
+            quic_line += f"[red]× UDP 443 заблокирован[/red]"
+        summary_lines.append(quic_line)
+
+    if h2_stats and h2_stats["total"] > 0:
+        h = h2_stats
+        h2_line = f"[bold]HTTP/2[/bold]      "
+        if h["ok"] == h["total"]:
+            h2_line += f"[green]√ {h['ok']}/{h['total']} ALPN работает[/green]"
+        elif h["ok"] > 0:
+            h2_line += f"[yellow]~ {h['ok']}/{h['total']} частично[/yellow]"
+        else:
+            h2_line += f"[red]× ALPN заблокирован[/red]"
+        summary_lines.append(h2_line)
+
+    d = domain_stats
+    if d:
+        d_ok_pct = int(d["ok"] / d["total"] * 100) if d["total"] else 0
+        summary_lines.append(
+            f"[bold]Домены[/bold]      "
+            f"[green]√ {d['ok']}/{d['total']} чисто[/green]"
+            + (f"  [red]⚡ {d['dpi']} DPI[/red]" if d.get('dpi') else "")
+            + (f"  [yellow]⏱ {d['timeout']} таймаут[/yellow]" if d['timeout'] else "")
+            + (f"  [dim red]✗ {d['dns_fail']} DNS[/dim red]" if d['dns_fail'] else "")
+            + f"  [dim]({d_ok_pct}% чисто)[/dim]"
+        )
+
+    t = tcp_stats
+    if t:
+        t_ok_pct = int(t["ok"] / t["total"] * 100) if t["total"] else 0
+        summary_lines.append(
+            f"[bold]TCP 16-20KB[/bold]  "
+            f"[green]√ {t['ok']}/{t['total']} OK[/green]"
+            + (f"  [red]× {t['blocked']} блок.[/red]" if t['blocked'] else "")
+            + (f"  [yellow]≈ {t['mixed']} смеш.[/yellow]" if t['mixed'] else "")
+            + f"  [dim]({t_ok_pct}%)[/dim]"
+        )
+
+    panel = Panel(
+        "\n".join(summary_lines),
+        title="[bold]Итог[/bold]",
+        border_style="cyan",
+        padding=(0, 1),
+        expand=False,
+    )
+    console.print(panel)
+
+    # Легенда
+    console.print("\n[bold]Легенда статусов:[/bold]")
+    legend = [
+        ("TLS DPI",   "DPI манипулирует или обрывает TLS соединение"),
+        ("UNSUPP",    "Сервер не поддерживает TLS 1.3 (не блокировка)"),
+        ("TLS MITM",  "Man-in-the-Middle: подмена/проблемы с сертификатом"),
+        ("TLS BLOCK", "Блокировка версии TLS или протокола"),
+        ("SSL ERR",   "SSL/TLS ошибка (часто проблемы совместимости CDN/сервера)"),
+        ("ISP PAGE",  "Редирект на страницу провайдера или блок-страница"),
+        ("BLOCKED",   "Заблокировано (HTTP 451 / UDP)"),
+        ("BYPASS",    "DPI обходится фрагментацией ClientHello"),
+        ("NO QUIC",   "Сервер не поддерживает QUIC (UDP открыт)"),
+        ("H2 / H1",   "Согласованный ALPN протокол (HTTP/2 или HTTP/1.1)"),
+        ("NO ALPN",   "Сервер не поддерживает ALPN"),
+        ("TIMEOUT",   "Таймаут соединения или чтения"),
+        ("REFUSED",   "Соединение отклонено (порт закрыт)"),
+        ("UNREACH",   "Сеть/хост недоступен (IP заблокирован)"),
+        ("DNS FAIL",  "Не удалось разрешить доменное имя"),
+        ("OK / REDIR","Сайт доступен (может быть редирект)"),
+    ]
+    console.print("\n[bold]Диагностика:[/bold]")
+    diag = [
+        ("TCP:OK + TLS:TIMEOUT",              "IP доступен, DPI блокирует TLS"),
+        ("TCP:OK + TLS:OK + noSNI:OK",        "SNI не фильтруется"),
+        ("TCP:OK + TLS:TIMEOUT + noSNI:OK",   "SNI-блокировка (DPI фильтрует по SNI)"),
+        ("T12:OK + T13:TIMEOUT",               "DPI блокирует TLS 1.3 на этом IP"),
+        ("TCP:TIMEOUT",                        "IP заблокирован на уровне TCP"),
+        ("QUIC:BLOCKED + TCP:OK",             "Провайдер блокирует UDP 443 (QUIC/HTTP3)"),
+        ("TLS:DPI + Frag:BYPASS",             "DPI обходится фрагментацией (zapret/GoodbyeDPI)"),
+        ("H2:TLS DPI + H1:OK",               "DPI блокирует HTTP/2 ALPN"),
+    ]
+    for pattern, desc in diag:
+        console.print(f"[dim]• [yellow]{pattern:<35}[/yellow] → {desc}[/dim]")
+    for term, desc in legend:
+        console.print(f"[dim]• [cyan]{term:<12}[/cyan] = {desc}[/dim]")
+
+    console.print("\n[bold green]Проверка завершена.[/bold green]")
+
 
 
 if __name__ == "__main__":

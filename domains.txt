@@ -1,7 +1,6 @@
 abaddon.koshka.monster
 ziz.koshka.monster
 solomon.koshka.monster
-moloch.koshka.monster
 uriel.koshka.monster
 nehemiah.koshka.monster
 bastet.koshka.monster
@@ -9,4 +8,3 @@ sekhmet.koshka.monster
 bakeneko.koshka.monster
 nekomata.koshka.monster
 freya.koshka.monster
-anubis.koshka.monster
